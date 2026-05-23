@@ -1077,18 +1077,53 @@ def page_own_products() -> None:
             if import_value:
                 st.caption(f"解析到 itemCode：{parsed_code or '未解析到'}")
         if import_btn:
-            try:
-                item_code = extract_item_code_from_rakuten_url(import_value)
-                data = call_proxy_item_lookup(proxy_url, proxy_token, item_code)
-                items = normalize_items(data)
-                if not items:
-                    st.error("没有读取到商品。请确认URL或itemCode是否正确。")
-                else:
+            item_code = extract_item_code_from_rakuten_url(import_value)
+
+            if not item_code:
+                st.error("没有解析到 itemCode。请确认URL类似：https://item.rakuten.co.jp/shopcode/itemid/")
+            else:
+                try:
+                    data = call_proxy_item_lookup(proxy_url, proxy_token, item_code)
+                    items = normalize_items(data)
+
+                    if not items:
+                        raise Exception("API没有返回商品数据")
+
                     imported = rakuten_item_to_own_product(items[0])
                     st.session_state["own_imported_product"] = imported
                     st.success("已读取楽天商品。请检查下方表单后保存。")
-            except Exception as e:
-                st.error(str(e))
+
+                except Exception as e:
+                    # API查不到时，允许URL手动导入，避免 itemCode is not valid 直接卡死。
+                    shop_code = ""
+                    item_id = ""
+
+                    if ":" in item_code:
+                        shop_code, item_id = item_code.split(":", 1)
+
+                    fallback = {
+                        "product_name": item_id or item_code,
+                        "selling_price": 0,
+                        "cost_price": 0,
+                        "core_selling_points": "",
+                        "material": "",
+                        "target_user": "",
+                        "size_color": "",
+                        "keywords": (item_id or item_code).replace("-", " "),
+                        "image_url": "",
+                        "product_url": import_value.strip(),
+                        "note": (
+                            f"楽天URL手动导入：{now_str()}\n"
+                            f"API未能直接读取此商品。\n"
+                            f"错误信息：{str(e)}\n\n"
+                            f"shopCode: {shop_code}\n"
+                            f"itemId: {item_id}\n"
+                            f"itemCode: {item_code}\n"
+                        ),
+                    }
+
+                    st.session_state["own_imported_product"] = fallback
+                    st.warning("楽天API没有读取到该商品，已进入手动导入模式。请补充商品名、价格和卖点后保存。")
         imported_product = st.session_state.get("own_imported_product")
         if imported_product:
             st.markdown("**导入预览**")
