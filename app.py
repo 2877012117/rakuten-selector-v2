@@ -688,6 +688,122 @@ def call_proxy_search(
     return data
 
 
+def extract_item_code_from_rakuten_url(value: str) -> str:
+    """从楽天商品URL或 itemCode 中提取 API 可用的 itemCode。
+
+    支持：
+    - shopCode:itemId
+    - https://item.rakuten.co.jp/shopCode/itemId/
+    - https://item.rakuten.co.jp/shopCode/itemId?...
+    """
+    value = (value or "").strip()
+    if not value:
+        return ""
+
+    # 已经是 itemCode 格式
+    if ":" in value and not value.startswith("http"):
+        return value.strip().strip("/")
+
+    # 解析 item.rakuten.co.jp/shop/item/
+    m = re.search(r"item\.rakuten\.co\.jp/([^/?#]+)/([^/?#]+)", value)
+    if m:
+        shop_code = m.group(1).strip()
+        item_id = m.group(2).strip()
+        if shop_code and item_id:
+            return f"{shop_code}:{item_id}"
+
+    return ""
+
+
+def call_proxy_item_lookup(proxy_url: str, proxy_token: str, item_code: str) -> Dict[str, Any]:
+    """通过代理按 itemCode 获取单个楽天商品。"""
+    proxy_url = proxy_url.strip()
+    item_code = item_code.strip()
+
+    if not proxy_url:
+        raise Exception("请填写代理地址")
+    if not item_code:
+        raise Exception("没有解析到楽天 itemCode。请确认URL类似：https://item.rakuten.co.jp/shopcode/itemid/")
+
+    params: Dict[str, Any] = {
+        "format": "json",
+        "formatVersion": 2,
+        "itemCode": item_code,
+        "hits": 1,
+        "page": 1,
+        "availability": 1,
+        "elements": ",".join([
+            "itemName",
+            "catchcopy",
+            "itemPrice",
+            "itemUrl",
+            "affiliateUrl",
+            "itemCode",
+            "shopName",
+            "shopCode",
+            "reviewCount",
+            "reviewAverage",
+            "mediumImageUrls",
+            "smallImageUrls",
+            "postageFlag",
+            "availability",
+            "pointRate",
+            "genreId",
+            "itemCaption",
+        ]),
+    }
+
+    headers = {"Content-Type": "application/json"}
+    if proxy_token.strip():
+        headers["X-Proxy-Token"] = proxy_token.strip()
+
+    response = requests.post(proxy_url, json=params, headers=headers, timeout=40)
+    if response.status_code != 200:
+        raise Exception(f"代理/API错误：{response.status_code}
+{response.text}")
+
+    data = response.json()
+    if data.get("ok") is False:
+        raise Exception(data.get("error", "代理返回错误"))
+    if "error" in data:
+        raise Exception(f"{data.get('error')}: {data.get('error_description')}")
+    if "errors" in data:
+        raise Exception(str(data["errors"]))
+
+    return data
+
+
+def rakuten_item_to_own_product(item: Dict[str, Any]) -> Dict[str, Any]:
+    """把楽天商品数据转换成自有商品表单字段。"""
+    image_url = get_first_image(item)
+    item_name = clean_text(item.get("itemName", ""))
+    catchcopy = clean_text(item.get("catchcopy", ""))
+    caption = clean_text(item.get("itemCaption", ""))
+
+    keyword_source = " ".join([item_name, catchcopy])
+    words = [w for w, _ in Counter(text_to_words(keyword_source)).most_common(30)]
+
+    return {
+        "product_name": item_name,
+        "selling_price": safe_int(item.get("itemPrice", 0)),
+        "cost_price": 0,
+        "core_selling_points": catchcopy,
+        "material": "",
+        "target_user": "",
+        "size_color": "",
+        "keywords": " ".join(words),
+        "image_url": image_url,
+        "product_url": item.get("itemUrl", ""),
+        "note": f"楽天から导入：{now_str()}
+shopCode: {item.get('shopCode', '')}
+itemCode: {item.get('itemCode', '')}
+レビュー: {item.get('reviewCount', 0)} / {item.get('reviewAverage', 0)}
+
+商品説明摘录：
+{caption[:800]}",
+    }
+
+
 # -----------------------------
 # AI 调用
 # -----------------------------
@@ -1220,35 +1336,100 @@ def page_favorites() -> None:
 # -----------------------------
 def page_own_products() -> None:
     st.title("📦 自有商品")
-    st.caption("添加你自己的商品，用于和收藏竞品做对比。")
+    st.caption("支持手动添加，也支持直接粘贴楽天商品URL / itemCode 导入。")
 
+    proxy_url = st.session_state.get("proxy_url", "")
+    proxy_token = st.session_state.get("proxy_token", "")
+
+    # -------- 楽天URL导入 --------
+    with st.container(border=True):
+        st.subheader("从楽天商品URL导入")
+        st.caption("支持格式：https://item.rakuten.co.jp/shopcode/itemid/ ，也支持直接输入 shopCode:itemId。")
+
+        import_value = st.text_input(
+            "楽天商品URL / itemCode",
+            value="",
+            placeholder="例：https://item.rakuten.co.jp/shopcode/itemid/ 或 shopcode:itemid",
+        )
+
+        col_a, col_b = st.columns([1, 3])
+        with col_a:
+            import_btn = st.button("读取楽天商品", type="primary")
+        with col_b:
+            parsed_code = extract_item_code_from_rakuten_url(import_value)
+            if import_value:
+                st.caption(f"解析到 itemCode：{parsed_code or '未解析到'}")
+
+        if import_btn:
+            try:
+                item_code = extract_item_code_from_rakuten_url(import_value)
+                data = call_proxy_item_lookup(proxy_url, proxy_token, item_code)
+                items = normalize_items(data)
+                if not items:
+                    st.error("没有读取到商品。请确认URL或itemCode是否正确。")
+                else:
+                    imported = rakuten_item_to_own_product(items[0])
+                    st.session_state["own_imported_product"] = imported
+                    st.success("已读取楽天商品。请检查下方表单后保存。")
+            except Exception as e:
+                st.error(str(e))
+
+        imported_product = st.session_state.get("own_imported_product")
+        if imported_product:
+            st.markdown("**导入预览**")
+            c_img, c_info = st.columns([1, 4])
+            with c_img:
+                if imported_product.get("image_url"):
+                    st.image(imported_product.get("image_url"), width=140)
+            with c_info:
+                st.write(imported_product.get("product_name", ""))
+                st.write(f"销售价：{imported_product.get('selling_price', 0)} 円")
+                if imported_product.get("product_url"):
+                    st.link_button("打开原商品", imported_product.get("product_url"))
+
+    # -------- 手动/导入后编辑保存 --------
     with st.container(border=True):
         st.subheader("添加/更新自有商品")
         own_df = load_own_products()
+        imported = st.session_state.get("own_imported_product", {}) or {}
+
         edit_id = st.number_input("更新已有商品ID，不更新则填 0", min_value=0, value=0, step=1)
 
         c1, c2, c3 = st.columns([2, 1, 1])
         with c1:
-            product_name = st.text_input("商品名", value="")
+            product_name = st.text_input("商品名", value=imported.get("product_name", ""))
         with c2:
-            selling_price = st.number_input("销售价 円", min_value=0, value=0, step=100)
+            selling_price = st.number_input("销售价 円", min_value=0, value=safe_int(imported.get("selling_price", 0)), step=100)
         with c3:
-            cost_price = st.number_input("成本价 円", min_value=0, value=0, step=100)
+            cost_price = st.number_input("成本价 円", min_value=0, value=safe_int(imported.get("cost_price", 0)), step=100)
 
-        core_selling_points = st.text_area("核心卖点", height=90, placeholder="例：UPF50+、接触冷感、男女兼用、軽量、速乾、団体注文...")
+        core_selling_points = st.text_area(
+            "核心卖点",
+            value=imported.get("core_selling_points", ""),
+            height=90,
+            placeholder="例：UPF50+、接触冷感、男女兼用、軽量、速乾、団体注文...",
+        )
         c4, c5 = st.columns(2)
         with c4:
-            material = st.text_input("材质/面料", value="")
-            target_user = st.text_input("目标人群", value="")
+            material = st.text_input("材质/面料", value=imported.get("material", ""))
+            target_user = st.text_input("目标人群", value=imported.get("target_user", ""))
         with c5:
-            size_color = st.text_input("尺码/颜色", value="")
-            keywords = st.text_input("已有关键词", value="")
+            size_color = st.text_input("尺码/颜色", value=imported.get("size_color", ""))
+            keywords = st.text_input("已有关键词", value=imported.get("keywords", ""))
 
-        image_url = st.text_input("图片URL，可不填", value="")
-        product_url = st.text_input("商品URL，可不填", value="")
-        note = st.text_area("备注", height=80)
+        image_url = st.text_input("图片URL，可不填", value=imported.get("image_url", ""))
+        product_url = st.text_input("商品URL，可不填", value=imported.get("product_url", ""))
+        note = st.text_area("备注", value=imported.get("note", ""), height=120)
 
-        if st.button("保存自有商品", type="primary"):
+        col_save, col_clear = st.columns([1, 3])
+        with col_save:
+            save_btn = st.button("保存自有商品", type="primary")
+        with col_clear:
+            if st.button("清空导入内容"):
+                st.session_state["own_imported_product"] = {}
+                st.rerun()
+
+        if save_btn:
             data = {
                 "product_name": product_name,
                 "selling_price": selling_price,
@@ -1263,6 +1444,7 @@ def page_own_products() -> None:
                 "note": note,
             }
             save_own_product(data, product_id=int(edit_id) if edit_id else None)
+            st.session_state["own_imported_product"] = {}
             st.success("已保存。")
             st.rerun()
 
