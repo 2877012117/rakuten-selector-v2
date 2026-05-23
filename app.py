@@ -12,46 +12,15 @@ import requests
 import streamlit as st
 
 
-# =========================================================
-# Rakuten Selector V2
-# 功能：
-# 1. 乐天代理搜索
-# 2. SQLite 本地数据库
-# 3. 收藏竞品
-# 4. 添加自有商品
-# 5. 商品对比：销售价档 / 综合评分 / 核心卖点 / 共同词 / 独有词 / 差异化建议
-# 6. DeepSeek AI 数据分析，多种分析深度
-# 7. AI 爆款关键词建议
-# 8. 楽天实时联想词搜索入口
-# 9. 趋势追踪：搜索快照、レビュー增长、价格变化、排名变化
-# =========================================================
-
 APP_TITLE = "乐天市场本地选品工具 V2 云部署版"
-
-# 云部署版说明：
-# 1. RAKUTEN_PROXY_URL / RAKUTEN_PROXY_TOKEN / DEEPSEEK_API_KEY 优先从 Streamlit Secrets 读取。
-# 2. 这样公开部署时，页面不会显示乐天代理地址和代理密码。
-# 3. 如果本地运行且没有配置 Secrets，会显示手动输入框作为备用。
 DEFAULT_PROXY_URL = ""
 DEFAULT_DB_PATH = "rakuten_selector_v2.sqlite3"
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
 
-
-# -----------------------------
-# Streamlit 基础设置
-# -----------------------------
-st.set_page_config(
-    page_title=APP_TITLE,
-    page_icon="🛒",
-    layout="wide",
-)
+st.set_page_config(page_title=APP_TITLE, page_icon="🛒", layout="wide")
 
 
-# -----------------------------
-# Streamlit Secrets 工具
-# -----------------------------
 def get_secret(key: str, default: str = "") -> str:
-    """安全读取 Streamlit Secrets；本地未配置时不报错。"""
     try:
         value = st.secrets.get(key, default)
         if value is None:
@@ -61,9 +30,6 @@ def get_secret(key: str, default: str = "") -> str:
         return default
 
 
-# -----------------------------
-# 通用工具函数
-# -----------------------------
 def now_str() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -100,14 +66,10 @@ def clean_text(text: Any) -> str:
     return text
 
 
-def normalize_url(url: str) -> str:
-    return (url or "").strip()
-
-
 def get_first_image(item: Dict[str, Any]) -> str:
     for key in ["mediumImageUrls", "smallImageUrls"]:
         urls = item.get(key, [])
-        if isinstance(urls, list) and len(urls) > 0:
+        if isinstance(urls, list) and urls:
             first = urls[0]
             if isinstance(first, dict):
                 return first.get("imageUrl", "") or first.get("url", "")
@@ -117,7 +79,6 @@ def get_first_image(item: Dict[str, Any]) -> str:
 
 
 def normalize_items(data: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """兼容新版 items / 旧版 Items / 旧版 Item 包裹格式"""
     items = data.get("items") or data.get("Items") or []
     normalized: List[Dict[str, Any]] = []
     for x in items:
@@ -129,23 +90,24 @@ def normalize_items(data: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def text_to_words(text: str, min_len: int = 2) -> List[str]:
-    """适合日文/中文/英文混合的粗分词：按标点空白切分，保留片假名/汉字/数字英文组合。"""
     text = clean_text(text)
     if not text:
         return []
 
-    # 把常见符号变空格
-    text = re.sub(r"[\[\]【】()（）{}<>《》『』「」｜|/\\,，.。;；:：!！?？+＋・★☆●○◎※♪#＃\-_=~〜～]", " ", text)
+    text = re.sub(
+        r"[\[\]【】()（）{}<>《》『』「」｜|/\\,，.。;；:：!！?？+＋・★☆●○◎※♪#＃\-_=~〜～]",
+        " ",
+        text,
+    )
     parts = re.split(r"\s+", text)
-
     stopwords = {
         "送料無料", "送料", "無料", "税込", "楽天", "市場", "商品", "販売", "人気", "おすすめ",
-        "ランキング", "レビュー", "ポイント", "クーポン", "セール", "価格", "限定",
-        "あり", "なし", "対応", "可能", "用", "の", "に", "を", "が", "と", "で", "から",
-        "です", "ます", "する", "した", "して", "ため", "こちら", "これ", "それ", "あす楽",
+        "ランキング", "レビュー", "ポイント", "クーポン", "セール", "価格", "限定", "あり", "なし",
+        "対応", "可能", "用", "の", "に", "を", "が", "と", "で", "から", "です", "ます", "する",
+        "した", "して", "ため", "こちら", "これ", "それ", "あす楽",
     }
 
-    words = []
+    words: List[str] = []
     for p in parts:
         p = p.strip()
         if len(p) < min_len:
@@ -171,9 +133,7 @@ def extract_keywords_from_rows(rows: List[Dict[str, Any]], top_n: int = 40) -> L
 
 
 def calc_score(row: Dict[str, Any]) -> float:
-    """简单选品分：评论数量、评分、价格带、包邮、库存、图片、积分倍率。"""
     score = 0.0
-
     review_count = to_number(row.get("レビュー数", 0))
     review_avg = to_number(row.get("レビュー评分", 0))
     price = to_number(row.get("价格", 0))
@@ -208,22 +168,18 @@ def calc_score(row: Dict[str, Any]) -> float:
         score += 10
     if image_url:
         score += 10
-
     if point_rate >= 5:
         score += 10
     elif point_rate >= 2:
         score += 5
-
     return round(score, 1)
 
 
 def convert_items_to_df(items: List[Dict[str, Any]], source_keyword: str = "") -> pd.DataFrame:
     rows: List[Dict[str, Any]] = []
-
     for index, item in enumerate(items, start=1):
         if not isinstance(item, dict):
             continue
-
         image_url = get_first_image(item)
         row = {
             "排名位置": index,
@@ -248,7 +204,6 @@ def convert_items_to_df(items: List[Dict[str, Any]], source_keyword: str = "") -
         }
         row["选品分"] = calc_score(row)
         rows.append(row)
-
     df = pd.DataFrame(rows)
     if not df.empty:
         df = df.sort_values(by="选品分", ascending=False).reset_index(drop=True)
@@ -263,7 +218,7 @@ def make_excel_download(df: pd.DataFrame) -> bytes:
 
 
 # -----------------------------
-# SQLite 数据库
+# SQLite
 # -----------------------------
 def get_conn(db_path: str = DEFAULT_DB_PATH) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path, check_same_thread=False)
@@ -274,7 +229,6 @@ def get_conn(db_path: str = DEFAULT_DB_PATH) -> sqlite3.Connection:
 def init_db() -> None:
     conn = get_conn()
     cur = conn.cursor()
-
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS favorites (
@@ -302,7 +256,6 @@ def init_db() -> None:
         )
         """
     )
-
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS own_products (
@@ -323,7 +276,6 @@ def init_db() -> None:
         )
         """
     )
-
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS search_snapshots (
@@ -345,7 +297,6 @@ def init_db() -> None:
         )
         """
     )
-
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS search_history (
@@ -361,7 +312,6 @@ def init_db() -> None:
         )
         """
     )
-
     conn.commit()
     conn.close()
 
@@ -518,14 +468,11 @@ def load_own_products() -> pd.DataFrame:
 def save_snapshots(df: pd.DataFrame, keyword: str, total_count: int = 0, genre_id: str = "") -> None:
     if df is None or df.empty:
         return
-
     conn = get_conn()
     cur = conn.cursor()
     snapshot_date = today_str()
     snapshot_time = now_str()
-
-    records = df_to_records(df)
-    for row in records:
+    for row in df_to_records(df):
         cur.execute(
             """
             INSERT INTO search_snapshots (
@@ -555,7 +502,6 @@ def save_snapshots(df: pd.DataFrame, keyword: str, total_count: int = 0, genre_i
     avg_price = float(df["价格"].mean()) if "价格" in df.columns else 0
     avg_review_count = float(df["レビュー数"].mean()) if "レビュー数" in df.columns else 0
     avg_review_average = float(df["レビュー评分"].mean()) if "レビュー评分" in df.columns else 0
-
     cur.execute(
         """
         INSERT INTO search_history (
@@ -563,18 +509,8 @@ def save_snapshots(df: pd.DataFrame, keyword: str, total_count: int = 0, genre_i
             avg_review_count, avg_review_average, created_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (
-            keyword,
-            genre_id,
-            total_count,
-            len(df),
-            avg_price,
-            avg_review_count,
-            avg_review_average,
-            now_str(),
-        ),
+        (keyword, genre_id, total_count, len(df), avg_price, avg_review_count, avg_review_average, now_str()),
     )
-
     conn.commit()
     conn.close()
 
@@ -601,7 +537,7 @@ def load_snapshots(keyword: Optional[str] = None) -> pd.DataFrame:
 
 
 # -----------------------------
-# 乐天代理请求
+# Rakuten Proxy
 # -----------------------------
 def call_proxy_search(
     proxy_url: str,
@@ -629,26 +565,11 @@ def call_proxy_search(
         "sort": sort,
         "availability": 1,
         "elements": ",".join([
-            "itemName",
-            "catchcopy",
-            "itemPrice",
-            "itemUrl",
-            "affiliateUrl",
-            "itemCode",
-            "shopName",
-            "shopCode",
-            "reviewCount",
-            "reviewAverage",
-            "mediumImageUrls",
-            "smallImageUrls",
-            "postageFlag",
-            "availability",
-            "pointRate",
-            "genreId",
-            "itemCaption",
+            "itemName", "catchcopy", "itemPrice", "itemUrl", "affiliateUrl", "itemCode", "shopName",
+            "shopCode", "reviewCount", "reviewAverage", "mediumImageUrls", "smallImageUrls", "postageFlag",
+            "availability", "pointRate", "genreId", "itemCaption",
         ]),
     }
-
     if keyword.strip():
         params["keyword"] = keyword.strip()
     if genre_id.strip():
@@ -669,57 +590,39 @@ def call_proxy_search(
         headers["X-Proxy-Token"] = proxy_token.strip()
 
     response = requests.post(proxy_url, json=params, headers=headers, timeout=40)
-
     if response.status_code != 200:
         raise Exception(f"代理/API错误：{response.status_code}\n{response.text}")
-
     try:
         data = response.json()
     except Exception:
         raise Exception(f"返回内容不是 JSON：\n{response.text[:1200]}")
-
     if data.get("ok") is False:
         raise Exception(data.get("error", "代理返回错误"))
     if "error" in data:
         raise Exception(f"{data.get('error')}: {data.get('error_description')}")
     if "errors" in data:
         raise Exception(str(data["errors"]))
-
     return data
 
 
 def extract_item_code_from_rakuten_url(value: str) -> str:
-    """从楽天商品URL或 itemCode 中提取 API 可用的 itemCode。
-
-    支持：
-    - shopCode:itemId
-    - https://item.rakuten.co.jp/shopCode/itemId/
-    - https://item.rakuten.co.jp/shopCode/itemId?...
-    """
     value = (value or "").strip()
     if not value:
         return ""
-
-    # 已经是 itemCode 格式
     if ":" in value and not value.startswith("http"):
         return value.strip().strip("/")
-
-    # 解析 item.rakuten.co.jp/shop/item/
     m = re.search(r"item\.rakuten\.co\.jp/([^/?#]+)/([^/?#]+)", value)
     if m:
         shop_code = m.group(1).strip()
         item_id = m.group(2).strip()
         if shop_code and item_id:
             return f"{shop_code}:{item_id}"
-
     return ""
 
 
 def call_proxy_item_lookup(proxy_url: str, proxy_token: str, item_code: str) -> Dict[str, Any]:
-    """通过代理按 itemCode 获取单个楽天商品。"""
     proxy_url = proxy_url.strip()
     item_code = item_code.strip()
-
     if not proxy_url:
         raise Exception("请填写代理地址")
     if not item_code:
@@ -733,34 +636,17 @@ def call_proxy_item_lookup(proxy_url: str, proxy_token: str, item_code: str) -> 
         "page": 1,
         "availability": 1,
         "elements": ",".join([
-            "itemName",
-            "catchcopy",
-            "itemPrice",
-            "itemUrl",
-            "affiliateUrl",
-            "itemCode",
-            "shopName",
-            "shopCode",
-            "reviewCount",
-            "reviewAverage",
-            "mediumImageUrls",
-            "smallImageUrls",
-            "postageFlag",
-            "availability",
-            "pointRate",
-            "genreId",
-            "itemCaption",
+            "itemName", "catchcopy", "itemPrice", "itemUrl", "affiliateUrl", "itemCode", "shopName",
+            "shopCode", "reviewCount", "reviewAverage", "mediumImageUrls", "smallImageUrls", "postageFlag",
+            "availability", "pointRate", "genreId", "itemCaption",
         ]),
     }
-
     headers = {"Content-Type": "application/json"}
     if proxy_token.strip():
         headers["X-Proxy-Token"] = proxy_token.strip()
-
     response = requests.post(proxy_url, json=params, headers=headers, timeout=40)
     if response.status_code != 200:
         raise Exception(f"代理/API错误：{response.status_code}\n{response.text}")
-
     data = response.json()
     if data.get("ok") is False:
         raise Exception(data.get("error", "代理返回错误"))
@@ -768,34 +654,24 @@ def call_proxy_item_lookup(proxy_url: str, proxy_token: str, item_code: str) -> 
         raise Exception(f"{data.get('error')}: {data.get('error_description')}")
     if "errors" in data:
         raise Exception(str(data["errors"]))
-
     return data
 
 
 def rakuten_item_to_own_product(item: Dict[str, Any]) -> Dict[str, Any]:
-    """把楽天商品数据转换成自有商品表单字段。"""
     image_url = get_first_image(item)
     item_name = clean_text(item.get("itemName", ""))
     catchcopy = clean_text(item.get("catchcopy", ""))
     caption = clean_text(item.get("itemCaption", ""))
-
     keyword_source = " ".join([item_name, catchcopy])
     words = [w for w, _ in Counter(text_to_words(keyword_source)).most_common(30)]
 
     note_text = (
-        f"楽天から导入：{now_str()}
-"
-        f"shopCode: {item.get('shopCode', '')}
-"
-        f"itemCode: {item.get('itemCode', '')}
-"
-        f"レビュー: {item.get('reviewCount', 0)} / {item.get('reviewAverage', 0)}
-
-"
-        f"商品説明摘录：
-{caption[:800]}"
+        f"楽天から导入：{now_str()}\n"
+        f"shopCode: {item.get('shopCode', '')}\n"
+        f"itemCode: {item.get('itemCode', '')}\n"
+        f"レビュー: {item.get('reviewCount', 0)} / {item.get('reviewAverage', 0)}\n\n"
+        f"商品説明摘录：\n{caption[:800]}"
     )
-
     return {
         "product_name": item_name,
         "selling_price": safe_int(item.get("itemPrice", 0)),
@@ -812,68 +688,34 @@ def rakuten_item_to_own_product(item: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # -----------------------------
-# AI 调用
+# AI
 # -----------------------------
 def ai_depth_config(depth: str) -> Dict[str, Any]:
     configs = {
-        "快速分析": {
-            "model": "deepseek-chat",
-            "max_tokens": 1200,
-            "temperature": 0.35,
-            "hint": "请简洁直接，重点判断是否值得做。",
-        },
-        "标准分析": {
-            "model": "deepseek-chat",
-            "max_tokens": 2200,
-            "temperature": 0.3,
-            "hint": "请给出完整分析，覆盖市场、竞争、价格、卖点、关键词。",
-        },
-        "深度分析": {
-            "model": "deepseek-reasoner",
-            "max_tokens": 3500,
-            "temperature": 0.25,
-            "hint": "请进行较深入的选品推理，明确机会、风险、打法和优先级。",
-        },
-        "极深推理": {
-            "model": "deepseek-reasoner",
-            "max_tokens": 5000,
-            "temperature": 0.2,
-            "hint": "请像电商选品负责人一样，进行结构化深度分析，给出可执行决策。",
-        },
+        "快速分析": {"model": "deepseek-chat", "max_tokens": 1200, "temperature": 0.35, "hint": "请简洁直接，重点判断是否值得做。"},
+        "标准分析": {"model": "deepseek-chat", "max_tokens": 2200, "temperature": 0.3, "hint": "请给出完整分析，覆盖市场、竞争、价格、卖点、关键词。"},
+        "深度分析": {"model": "deepseek-reasoner", "max_tokens": 3500, "temperature": 0.25, "hint": "请进行较深入的选品推理，明确机会、风险、打法和优先级。"},
+        "极深推理": {"model": "deepseek-reasoner", "max_tokens": 5000, "temperature": 0.2, "hint": "请像电商选品负责人一样，进行结构化深度分析，给出可执行决策。"},
     }
     return configs.get(depth, configs["标准分析"])
 
 
-def call_deepseek(
-    api_key: str,
-    messages: List[Dict[str, str]],
-    depth: str = "标准分析",
-    model_override: Optional[str] = None,
-) -> str:
+def call_deepseek(api_key: str, messages: List[Dict[str, str]], depth: str = "标准分析", model_override: Optional[str] = None) -> str:
     api_key = api_key.strip()
     if not api_key:
         raise Exception("请填写 DeepSeek API Key")
-
     cfg = ai_depth_config(depth)
-    model = model_override or cfg["model"]
-
     payload = {
-        "model": model,
+        "model": model_override or cfg["model"],
         "messages": messages,
         "temperature": cfg["temperature"],
         "max_tokens": cfg["max_tokens"],
         "stream": False,
     }
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     response = requests.post(DEEPSEEK_API_URL, headers=headers, json=payload, timeout=120)
     if response.status_code != 200:
         raise Exception(f"DeepSeek API错误：{response.status_code}\n{response.text}")
-
     data = response.json()
     try:
         return data["choices"][0]["message"]["content"]
@@ -884,11 +726,9 @@ def call_deepseek(
 def summarize_market_df(df: pd.DataFrame, keyword: str = "") -> Dict[str, Any]:
     if df is None or df.empty:
         return {}
-
     rows = df_to_records(df)
     keywords = extract_keywords_from_rows(rows, top_n=50)
-
-    summary = {
+    return {
         "keyword": keyword,
         "result_count": len(df),
         "avg_price": float(df["价格"].mean()) if "价格" in df.columns else 0,
@@ -902,15 +742,11 @@ def summarize_market_df(df: pd.DataFrame, keyword: str = "") -> Dict[str, Any]:
         "top_keywords": keywords[:30],
         "top_items": rows[:12],
     }
-    return summary
 
 
 def build_ai_market_prompt(summary: Dict[str, Any], depth: str) -> List[Dict[str, str]]:
     cfg = ai_depth_config(depth)
-    system = (
-        "你是日本楽天市場选品和关键词运营专家，熟悉楽天SEO、商品标题、主图卖点、价格带、レビュー竞争、服装/儿童用品/防晒用品/舞台装等品类。"
-        "请用中文分析，但关键词保持日语。输出要具体、可执行，不要空泛。"
-    )
+    system = "你是日本楽天市場选品和关键词运营专家。请用中文分析，但关键词保持日语。输出要具体、可执行。"
     user = f"""
 请基于以下楽天市場搜索结果摘要，进行选品分析。
 
@@ -920,29 +756,26 @@ def build_ai_market_prompt(summary: Dict[str, Any], depth: str) -> List[Dict[str
 1. 结论：这个品是否值得做，用 1-5 星表示
 2. 市场需求判断
 3. 竞争强度判断
-4. 价格带建议：低价款 / 主力款 / 高客单款分别怎么定
-5. レビュー门槛：新品要超过多少レビュー才比较有竞争力
+4. 价格带建议
+5. レビュー门槛
 6. 可切入差异点：至少 5 条
-7. 标题关键词建议：分为核心词、属性词、场景词、人群词、长尾词
+7. 标题关键词建议：核心词、属性词、场景词、人群词、长尾词
 8. 主图卖点建议：适合楽天主图的 3-5 个日语短句
-9. 风险提醒：退换货、尺码、侵权、季节性、广告法风险
-10. 最终行动建议：上架 / 观察 / 不建议，并说明理由
+9. 风险提醒
+10. 最终行动建议
 
-数据摘要如下：
+数据摘要：
 {json.dumps(summary, ensure_ascii=False, indent=2)[:18000]}
 """
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
-def build_ai_keyword_prompt(summary: Dict[str, Any], product_info: str = "", depth: str = "标准分析") -> List[Dict[str, str]]:
-    system = (
-        "你是日本楽天市場爆款关键词专家。你擅长从竞品标题、キャッチコピー、レビュー数据中提炼可用于楽天SEO、RPP广告、商品标题和商品页面的日语关键词。"
-        "请用中文解释分类，但关键词本身使用自然日语。"
-    )
+def build_ai_keyword_prompt(summary: Dict[str, Any], product_info: str = "") -> List[Dict[str, str]]:
+    system = "你是日本楽天市場爆款关键词专家。请用中文解释分类，关键词本身使用自然日语。"
     user = f"""
 请根据以下楽天竞品数据，为我生成爆款关键词建议。
 
-我的商品信息/补充信息：
+我的商品信息：
 {product_info or '未提供'}
 
 请输出：
@@ -954,7 +787,7 @@ def build_ai_keyword_prompt(summary: Dict[str, Any], product_info: str = "", dep
 6. 功能/材质词
 7. 季节词
 8. RPP广告候选词
-9. 楽天商品标题组合 3 组，每组自然可读
+9. 楽天商品标题组合 3 组
 10. 楽天关键词栏组合 3 组，每组控制在 147 个日文字符左右
 11. 不建议使用/需要谨慎的词
 
@@ -964,23 +797,21 @@ def build_ai_keyword_prompt(summary: Dict[str, Any], product_info: str = "", dep
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
-def build_ai_compare_prompt(compare_payload: Dict[str, Any], depth: str) -> List[Dict[str, str]]:
-    system = (
-        "你是楽天市場竞品对比和差异化定位专家。请从价格、レビュー、卖点、共同词、独有词、视觉主图方向等方面给出落地建议。"
-    )
+def build_ai_compare_prompt(compare_payload: Dict[str, Any]) -> List[Dict[str, str]]:
+    system = "你是楽天市場竞品对比和差异化定位专家。请给出落地建议。"
     user = f"""
 请对我的商品和收藏竞品做对比分析。
 
 请输出：
 1. 价格档位判断
-2. 综合竞争力评分：我的商品 vs 竞品平均
+2. 综合竞争力评分
 3. 共同词/共同卖点说明
 4. 竞品独有优势
 5. 我方独有优势
 6. 我方应该补充的关键词
 7. 我方应该避开的红海表达
 8. 差异化建议：标题、主图、详情页、价格、套装内容、售后风险
-9. 最终改进优先级：先改什么，后改什么
+9. 最终改进优先级
 
 对比数据：
 {json.dumps(compare_payload, ensure_ascii=False, indent=2)[:20000]}
@@ -989,28 +820,15 @@ def build_ai_compare_prompt(compare_payload: Dict[str, Any], depth: str) -> List
 
 
 # -----------------------------
-# 对比分析工具
+# Compare helpers
 # -----------------------------
 def own_product_to_text(row: pd.Series) -> str:
-    parts = [
-        row.get("product_name", ""),
-        row.get("core_selling_points", ""),
-        row.get("material", ""),
-        row.get("target_user", ""),
-        row.get("size_color", ""),
-        row.get("keywords", ""),
-        row.get("note", ""),
-    ]
+    parts = [row.get("product_name", ""), row.get("core_selling_points", ""), row.get("material", ""), row.get("target_user", ""), row.get("size_color", ""), row.get("keywords", ""), row.get("note", "")]
     return " ".join([clean_text(x) for x in parts if clean_text(x)])
 
 
 def favorite_to_text(row: pd.Series) -> str:
-    parts = [
-        row.get("item_name", ""),
-        row.get("catchcopy", ""),
-        row.get("item_caption", ""),
-        row.get("note", ""),
-    ]
+    parts = [row.get("item_name", ""), row.get("catchcopy", ""), row.get("item_caption", ""), row.get("note", "")]
     return " ".join([clean_text(x) for x in parts if clean_text(x)])
 
 
@@ -1023,17 +841,11 @@ def compare_words(own_text: str, competitor_texts: List[str]) -> Dict[str, Any]:
     else:
         comp_union = set()
         comp_intersection = set()
-
-    common = sorted(list(own_words & comp_union))
-    own_unique = sorted(list(own_words - comp_union))
-    comp_unique = sorted(list(comp_union - own_words))
-    comp_common = sorted(list(comp_intersection))
-
     return {
-        "共同词_我方与竞品交集": common[:80],
-        "我方独有词": own_unique[:80],
-        "竞品独有词": comp_unique[:120],
-        "竞品共同词": comp_common[:80],
+        "共同词_我方与竞品交集": sorted(list(own_words & comp_union))[:80],
+        "我方独有词": sorted(list(own_words - comp_union))[:80],
+        "竞品独有词": sorted(list(comp_union - own_words))[:120],
+        "竞品共同词": sorted(list(comp_intersection))[:80],
     }
 
 
@@ -1055,13 +867,11 @@ def build_compare_payload(own_row: pd.Series, fav_df: pd.DataFrame) -> Dict[str,
     own_text = own_product_to_text(own_row)
     competitor_texts = [favorite_to_text(row) for _, row in fav_df.iterrows()]
     word_result = compare_words(own_text, competitor_texts)
-
     own_price = safe_int(own_row.get("selling_price", 0))
     comp_prices = fav_df["price"].dropna().astype(float).tolist() if not fav_df.empty else []
     comp_reviews = fav_df["review_count"].dropna().astype(float).tolist() if not fav_df.empty else []
     comp_scores = fav_df["score"].dropna().astype(float).tolist() if not fav_df.empty else []
-
-    payload = {
+    return {
         "my_product": {
             "name": own_row.get("product_name", ""),
             "selling_price": own_price,
@@ -1084,88 +894,57 @@ def build_compare_payload(own_row: pd.Series, fav_df: pd.DataFrame) -> Dict[str,
         "word_analysis": word_result,
         "competitors": fav_df.head(20).fillna("").to_dict(orient="records") if not fav_df.empty else [],
     }
-    return payload
 
 
 # -----------------------------
-# 页面：基础设置侧栏
+# Sidebar
 # -----------------------------
 def sidebar_settings() -> Dict[str, Any]:
     with st.sidebar:
-        st.header("云端配置状态")
+        st.title("🛒 Rakuten Selector V2 云部署版")
+        page = st.radio(
+            "功能菜单",
+            ["商品搜索", "收藏商品", "自有商品", "对比分析", "AI选品分析", "AI爆款关键词", "楽天联想词", "趋势追踪"],
+        )
 
+        st.divider()
+        st.header("云端配置状态")
         secret_proxy_url = get_secret("RAKUTEN_PROXY_URL")
         secret_proxy_token = get_secret("RAKUTEN_PROXY_TOKEN")
         secret_deepseek_key = get_secret("DEEPSEEK_API_KEY")
 
-        # 云端优先使用 Secrets；本地没配置 Secrets 时才显示输入框。
         if secret_proxy_url and secret_proxy_token:
             proxy_url = secret_proxy_url
             proxy_token = secret_proxy_token
             st.success("乐天代理已从 Secrets 读取")
         else:
             st.warning("未检测到乐天代理 Secrets，本地测试时请手动填写。")
-            proxy_url = st.text_input(
-                "乐天代理地址，本地备用",
-                value=st.session_state.get("proxy_url", DEFAULT_PROXY_URL),
-                help="云端部署时建议放到 Streamlit Secrets 的 RAKUTEN_PROXY_URL。",
-            )
-            proxy_token = st.text_input(
-                "代理密码，本地备用",
-                value=st.session_state.get("proxy_token", ""),
-                type="password",
-                help="云端部署时建议放到 Streamlit Secrets 的 RAKUTEN_PROXY_TOKEN。",
-            )
+            proxy_url = st.text_input("乐天代理地址，本地备用", value=st.session_state.get("proxy_url", DEFAULT_PROXY_URL))
+            proxy_token = st.text_input("代理密码，本地备用", value=st.session_state.get("proxy_token", ""), type="password")
 
         st.session_state["proxy_url"] = proxy_url
         st.session_state["proxy_token"] = proxy_token
 
         st.divider()
         st.header("AI 设置")
-
         if secret_deepseek_key:
             deepseek_api_key = secret_deepseek_key
             st.success("DeepSeek API Key 已从 Secrets 读取")
             st.caption("公开部署且没有登录密码时，所有访问者都可以使用你的 DeepSeek 额度。")
         else:
-            deepseek_api_key = st.text_input(
-                "DeepSeek API Key",
-                value=st.session_state.get("deepseek_api_key", ""),
-                type="password",
-                help="没有配置 Secrets 时，使用者可手动输入自己的 DeepSeek Key。",
-            )
+            deepseek_api_key = st.text_input("DeepSeek API Key", value=st.session_state.get("deepseek_api_key", ""), type="password")
         st.session_state["deepseek_api_key"] = deepseek_api_key
 
-        depth = st.selectbox(
-            "DeepSeek 分析深度",
-            ["快速分析", "标准分析", "深度分析", "极深推理"],
-            index=["快速分析", "标准分析", "深度分析", "极深推理"].index(
-                st.session_state.get("ai_depth", "标准分析")
-            ),
-        )
-        st.session_state["ai_depth"] = depth
-
-        model_override = st.selectbox(
-            "模型选择",
-            ["自动匹配深度", "deepseek-chat", "deepseek-reasoner"],
-            index=0,
-        )
+        depth = st.selectbox("DeepSeek 分析深度", ["快速分析", "标准分析", "深度分析", "极深推理"], index=1)
+        model_override = st.selectbox("模型选择", ["自动匹配深度", "deepseek-chat", "deepseek-reasoner"], index=0)
         selected_model = None if model_override == "自动匹配深度" else model_override
-
         st.divider()
         st.caption("数据库文件：" + str(Path(DEFAULT_DB_PATH).resolve()))
-
-    return {
-        "proxy_url": proxy_url,
-        "proxy_token": proxy_token,
-        "deepseek_api_key": deepseek_api_key,
-        "depth": depth,
-        "selected_model": selected_model,
-    }
+    return {"page": page, "proxy_url": proxy_url, "proxy_token": proxy_token, "deepseek_api_key": deepseek_api_key, "depth": depth, "selected_model": selected_model}
 
 
 # -----------------------------
-# 页面 1：商品搜索
+# Pages
 # -----------------------------
 def page_search(settings: Dict[str, Any]) -> None:
     st.title("🛒 商品搜索")
@@ -1181,7 +960,6 @@ def page_search(settings: Dict[str, Any]) -> None:
             min_price = st.number_input("最低价格", min_value=0, value=0, step=100)
         with c4:
             max_price = st.number_input("最高价格", min_value=0, value=0, step=100)
-
         c5, c6, c7, c8 = st.columns([1, 1, 2, 2])
         with c5:
             hits = st.slider("每页数量", min_value=1, max_value=30, value=30)
@@ -1189,12 +967,8 @@ def page_search(settings: Dict[str, Any]) -> None:
             page = st.number_input("页码", min_value=1, max_value=100, value=1, step=1)
         with c7:
             sort_options = {
-                "乐天标准": "standard",
-                "レビュー数 多 → 少": "-reviewCount",
-                "レビュー评分 高 → 低": "-reviewAverage",
-                "价格 低 → 高": "+itemPrice",
-                "价格 高 → 低": "-itemPrice",
-                "更新时间 新 → 旧": "-updateTimestamp",
+                "乐天标准": "standard", "レビュー数 多 → 少": "-reviewCount", "レビュー评分 高 → 低": "-reviewAverage",
+                "价格 低 → 高": "+itemPrice", "价格 高 → 低": "-itemPrice", "更新时间 新 → 旧": "-updateTimestamp",
                 "アフィリエイト料率 高 → 低": "-affiliateRate",
             }
             sort_label = st.selectbox("排序", list(sort_options.keys()))
@@ -1203,39 +977,22 @@ def page_search(settings: Dict[str, Any]) -> None:
             postage_only = st.checkbox("只看送料無料")
             has_review_only = st.checkbox("只看有レビュー")
             image_only = st.checkbox("只看有图片", value=True)
-
         search_button = st.button("开始搜索", type="primary")
 
     if search_button:
         if not keyword.strip() and not genre_id.strip():
             st.error("关键词和ジャンルID至少填一个。")
             return
-
         with st.spinner("正在搜索楽天商品数据..."):
             try:
-                data = call_proxy_search(
-                    proxy_url=settings["proxy_url"],
-                    proxy_token=settings["proxy_token"],
-                    keyword=keyword,
-                    genre_id=genre_id,
-                    min_price=min_price,
-                    max_price=max_price,
-                    hits=hits,
-                    page=page,
-                    sort=sort,
-                    postage_only=postage_only,
-                    has_review_only=has_review_only,
-                    image_only=image_only,
-                )
+                data = call_proxy_search(settings["proxy_url"], settings["proxy_token"], keyword, genre_id, min_price, max_price, hits, page, sort, postage_only, has_review_only, image_only)
                 items = normalize_items(data)
                 df = convert_items_to_df(items, source_keyword=keyword)
                 total_count = safe_int(data.get("count") or data.get("Count") or 0)
-
                 st.session_state["search_df"] = df
                 st.session_state["last_keyword"] = keyword
                 st.session_state["last_total_count"] = total_count
                 st.session_state["last_raw_data"] = data
-
                 save_snapshots(df, keyword=keyword, total_count=total_count, genre_id=genre_id)
                 st.success(f"搜索完成：约 {total_count:,} 件，当前显示 {len(df)} 件。已保存趋势快照。")
             except Exception as e:
@@ -1254,20 +1011,9 @@ def page_search(settings: Dict[str, Any]) -> None:
     c4.metric("评分均值", f"{df['レビュー评分'].mean():.2f}")
     c5.metric("最高选品分", f"{df['选品分'].max():.1f}")
 
-    st.subheader("商品列表")
-    show_cols = [
-        "选品分", "排名位置", "商品名", "价格", "レビュー数", "レビュー评分",
-        "送料無料", "ポイント倍率", "店铺名", "genreId", "itemCode", "商品URL"
-    ]
+    show_cols = ["选品分", "排名位置", "商品名", "价格", "レビュー数", "レビュー评分", "送料無料", "ポイント倍率", "店铺名", "genreId", "itemCode", "商品URL"]
     st.dataframe(df[show_cols], use_container_width=True, hide_index=True)
-
-    excel_data = make_excel_download(df)
-    st.download_button(
-        "下载当前搜索结果 Excel",
-        data=excel_data,
-        file_name=f"rakuten_search_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
+    st.download_button("下载当前搜索结果 Excel", data=make_excel_download(df), file_name=f"rakuten_search_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     st.subheader("Top 商品预览与收藏")
     for idx, row in df.head(12).iterrows():
@@ -1293,29 +1039,18 @@ def page_search(settings: Dict[str, Any]) -> None:
                     st.success("已收藏")
 
 
-# -----------------------------
-# 页面 2：收藏商品
-# -----------------------------
 def page_favorites() -> None:
     st.title("⭐ 收藏商品 / 竞品库")
     fav_df = load_favorites()
-
     if fav_df.empty:
         st.info("还没有收藏商品。请先到“商品搜索”页收藏竞品。")
         return
-
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("收藏数", len(fav_df))
     c2.metric("平均价格", f"{int(fav_df['price'].mean()):,} 円")
     c3.metric("平均レビュー", f"{fav_df['review_count'].mean():.0f}")
     c4.metric("平均选品分", f"{fav_df['score'].mean():.1f}")
-
-    st.dataframe(
-        fav_df[["id", "score", "item_name", "price", "review_count", "review_average", "shop_name", "source_keyword", "item_url", "note"]],
-        use_container_width=True,
-        hide_index=True,
-    )
-
+    st.dataframe(fav_df[["id", "score", "item_name", "price", "review_count", "review_average", "shop_name", "source_keyword", "item_url", "note"]], use_container_width=True, hide_index=True)
     with st.expander("删除收藏商品"):
         fav_id = st.number_input("输入要删除的收藏ID", min_value=0, value=0, step=1)
         if st.button("删除收藏") and fav_id > 0:
@@ -1323,42 +1058,17 @@ def page_favorites() -> None:
             st.success("已删除，刷新页面后生效。")
             st.rerun()
 
-    st.subheader("收藏商品预览")
-    for _, row in fav_df.head(20).iterrows():
-        with st.container(border=True):
-            c1, c2 = st.columns([1, 4])
-            with c1:
-                if row.get("image_url"):
-                    st.image(row.get("image_url"), width=130)
-            with c2:
-                st.markdown(f"### #{row.get('id')} {row.get('item_name')}")
-                st.write(f"价格：{row.get('price')}円 ｜ レビュー：{row.get('review_count')} / {row.get('review_average')} ｜ 选品分：{row.get('score')}")
-                st.write(f"店铺：{row.get('shop_name')}")
-                if row.get("item_url"):
-                    st.link_button("打开竞品", row.get("item_url"))
 
-
-# -----------------------------
-# 页面 3：自有商品
-# -----------------------------
 def page_own_products() -> None:
     st.title("📦 自有商品")
     st.caption("支持手动添加，也支持直接粘贴楽天商品URL / itemCode 导入。")
-
     proxy_url = st.session_state.get("proxy_url", "")
     proxy_token = st.session_state.get("proxy_token", "")
 
-    # -------- 楽天URL导入 --------
     with st.container(border=True):
         st.subheader("从楽天商品URL导入")
         st.caption("支持格式：https://item.rakuten.co.jp/shopcode/itemid/ ，也支持直接输入 shopCode:itemId。")
-
-        import_value = st.text_input(
-            "楽天商品URL / itemCode",
-            value="",
-            placeholder="例：https://item.rakuten.co.jp/shopcode/itemid/ 或 shopcode:itemid",
-        )
-
+        import_value = st.text_input("楽天商品URL / itemCode", value="", placeholder="例：https://item.rakuten.co.jp/shopcode/itemid/ 或 shopcode:itemid")
         col_a, col_b = st.columns([1, 3])
         with col_a:
             import_btn = st.button("读取楽天商品", type="primary")
@@ -1366,7 +1076,6 @@ def page_own_products() -> None:
             parsed_code = extract_item_code_from_rakuten_url(import_value)
             if import_value:
                 st.caption(f"解析到 itemCode：{parsed_code or '未解析到'}")
-
         if import_btn:
             try:
                 item_code = extract_item_code_from_rakuten_url(import_value)
@@ -1380,7 +1089,6 @@ def page_own_products() -> None:
                     st.success("已读取楽天商品。请检查下方表单后保存。")
             except Exception as e:
                 st.error(str(e))
-
         imported_product = st.session_state.get("own_imported_product")
         if imported_product:
             st.markdown("**导入预览**")
@@ -1394,14 +1102,10 @@ def page_own_products() -> None:
                 if imported_product.get("product_url"):
                     st.link_button("打开原商品", imported_product.get("product_url"))
 
-    # -------- 手动/导入后编辑保存 --------
     with st.container(border=True):
         st.subheader("添加/更新自有商品")
-        own_df = load_own_products()
         imported = st.session_state.get("own_imported_product", {}) or {}
-
         edit_id = st.number_input("更新已有商品ID，不更新则填 0", min_value=0, value=0, step=1)
-
         c1, c2, c3 = st.columns([2, 1, 1])
         with c1:
             product_name = st.text_input("商品名", value=imported.get("product_name", ""))
@@ -1409,13 +1113,7 @@ def page_own_products() -> None:
             selling_price = st.number_input("销售价 円", min_value=0, value=safe_int(imported.get("selling_price", 0)), step=100)
         with c3:
             cost_price = st.number_input("成本价 円", min_value=0, value=safe_int(imported.get("cost_price", 0)), step=100)
-
-        core_selling_points = st.text_area(
-            "核心卖点",
-            value=imported.get("core_selling_points", ""),
-            height=90,
-            placeholder="例：UPF50+、接触冷感、男女兼用、軽量、速乾、団体注文...",
-        )
+        core_selling_points = st.text_area("核心卖点", value=imported.get("core_selling_points", ""), height=90, placeholder="例：UPF50+、接触冷感、男女兼用、軽量、速乾、団体注文...")
         c4, c5 = st.columns(2)
         with c4:
             material = st.text_input("材质/面料", value=imported.get("material", ""))
@@ -1423,11 +1121,9 @@ def page_own_products() -> None:
         with c5:
             size_color = st.text_input("尺码/颜色", value=imported.get("size_color", ""))
             keywords = st.text_input("已有关键词", value=imported.get("keywords", ""))
-
         image_url = st.text_input("图片URL，可不填", value=imported.get("image_url", ""))
         product_url = st.text_input("商品URL，可不填", value=imported.get("product_url", ""))
         note = st.text_area("备注", value=imported.get("note", ""), height=120)
-
         col_save, col_clear = st.columns([1, 3])
         with col_save:
             save_btn = st.button("保存自有商品", type="primary")
@@ -1435,7 +1131,6 @@ def page_own_products() -> None:
             if st.button("清空导入内容"):
                 st.session_state["own_imported_product"] = {}
                 st.rerun()
-
         if save_btn:
             data = {
                 "product_name": product_name,
@@ -1469,46 +1164,32 @@ def page_own_products() -> None:
                 st.rerun()
 
 
-# -----------------------------
-# 页面 4：对比分析
-# -----------------------------
 def page_compare(settings: Dict[str, Any]) -> None:
     st.title("⚖️ 商品对比分析")
-    st.caption("选择一个自有商品，与收藏竞品做销售价档、综合评分、共同词、独有词和差异化建议。")
-
     own_df = load_own_products()
     fav_df = load_favorites()
-
     if own_df.empty:
         st.warning("请先添加自有商品。")
         return
     if fav_df.empty:
         st.warning("请先收藏竞品。")
         return
-
     own_options = {f"#{row['id']} {row['product_name']}": row["id"] for _, row in own_df.iterrows()}
     selected_own_label = st.selectbox("选择自有商品", list(own_options.keys()))
-    selected_own_id = own_options[selected_own_label]
-    own_row = own_df[own_df["id"] == selected_own_id].iloc[0]
-
-    st.subheader("选择参与对比的竞品")
-    fav_options = {f"#{row['id']} {row['item_name'][:60]}": row["id"] for _, row in fav_df.iterrows()}
+    own_row = own_df[own_df["id"] == own_options[selected_own_label]].iloc[0]
+    fav_options = {f"#{row['id']} {str(row['item_name'])[:60]}": row["id"] for _, row in fav_df.iterrows()}
     selected_labels = st.multiselect("竞品", list(fav_options.keys()), default=list(fav_options.keys())[:5])
     selected_ids = [fav_options[label] for label in selected_labels]
     selected_fav_df = fav_df[fav_df["id"].isin(selected_ids)].copy()
-
     if selected_fav_df.empty:
         st.info("请选择至少一个竞品。")
         return
-
     payload = build_compare_payload(own_row, selected_fav_df)
-
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("我的售价档", payload["my_product"]["price_band"])
     c2.metric("竞品平均价", f"{int(payload['competitor_summary']['avg_price']):,} 円")
     c3.metric("竞品平均レビュー", f"{payload['competitor_summary']['avg_review_count']:.0f}")
     c4.metric("竞品平均选品分", f"{payload['competitor_summary']['avg_score']:.1f}")
-
     st.subheader("共同词 / 独有词")
     word_analysis = payload["word_analysis"]
     col1, col2 = st.columns(2)
@@ -1522,204 +1203,113 @@ def page_compare(settings: Dict[str, Any]) -> None:
         st.write(" / ".join(word_analysis["竞品共同词"][:60]) or "暂无")
         st.markdown("**竞品独有词**")
         st.write(" / ".join(word_analysis["竞品独有词"][:80]) or "暂无")
-
-    st.subheader("竞品表")
-    st.dataframe(
-        selected_fav_df[["id", "item_name", "price", "review_count", "review_average", "score", "shop_name", "item_url"]],
-        use_container_width=True,
-        hide_index=True,
-    )
-
+    st.dataframe(selected_fav_df[["id", "item_name", "price", "review_count", "review_average", "score", "shop_name", "item_url"]], use_container_width=True, hide_index=True)
     if st.button("用 AI 生成差异化建议", type="primary"):
         with st.spinner("AI 正在对比分析..."):
             try:
-                messages = build_ai_compare_prompt(payload, settings["depth"])
-                result = call_deepseek(
-                    api_key=settings["deepseek_api_key"],
-                    messages=messages,
-                    depth=settings["depth"],
-                    model_override=settings["selected_model"],
-                )
+                result = call_deepseek(settings["deepseek_api_key"], build_ai_compare_prompt(payload), settings["depth"], settings["selected_model"])
                 st.session_state["compare_ai_result"] = result
             except Exception as e:
                 st.error(str(e))
-
     if st.session_state.get("compare_ai_result"):
         st.subheader("AI 差异化建议")
         st.markdown(st.session_state["compare_ai_result"])
 
-    with st.expander("查看对比原始数据"):
-        st.json(payload)
 
-
-# -----------------------------
-# 页面 5：AI 选品分析
-# -----------------------------
 def page_ai_analysis(settings: Dict[str, Any]) -> None:
     st.title("🧠 AI 选品数据分析")
     df = st.session_state.get("search_df", pd.DataFrame())
     keyword = st.session_state.get("last_keyword", "")
-
     if df is None or df.empty:
         st.warning("请先到“商品搜索”页搜索商品。")
         return
-
     summary = summarize_market_df(df, keyword=keyword)
-
-    st.subheader("当前数据摘要")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("结果数", summary.get("result_count", 0))
     c2.metric("中位价格", f"{int(summary.get('median_price', 0)):,} 円")
     c3.metric("平均レビュー", f"{summary.get('avg_review_count', 0):.0f}")
     c4.metric("送料無料占比", f"{summary.get('free_shipping_rate', 0) * 100:.0f}%")
-
     with st.expander("高频词"):
         st.write(" / ".join([f"{w}({c})" for w, c in summary.get("top_keywords", [])[:50]]))
-
-    user_note = st.text_area("补充你的判断/供应链信息，可选", height=100, placeholder="例如：采购价、1688货源、库存颜色、目标售价、主图能力、是否可做团购...")
-
+    user_note = st.text_area("补充你的判断/供应链信息，可选", height=100)
     if st.button("开始 AI 选品分析", type="primary"):
         with st.spinner("AI 正在分析市场数据..."):
             try:
                 if user_note.strip():
                     summary["user_note"] = user_note.strip()
-                messages = build_ai_market_prompt(summary, settings["depth"])
-                result = call_deepseek(
-                    api_key=settings["deepseek_api_key"],
-                    messages=messages,
-                    depth=settings["depth"],
-                    model_override=settings["selected_model"],
-                )
+                result = call_deepseek(settings["deepseek_api_key"], build_ai_market_prompt(summary, settings["depth"]), settings["depth"], settings["selected_model"])
                 st.session_state["ai_market_result"] = result
             except Exception as e:
                 st.error(str(e))
-
     if st.session_state.get("ai_market_result"):
         st.subheader("AI 选品分析结果")
         st.markdown(st.session_state["ai_market_result"])
 
-    with st.expander("查看发送给 AI 的数据摘要"):
-        st.json(summary)
 
-
-# -----------------------------
-# 页面 6：AI 爆款关键词
-# -----------------------------
 def page_ai_keywords(settings: Dict[str, Any]) -> None:
     st.title("🔥 AI 爆款关键词建议")
     df = st.session_state.get("search_df", pd.DataFrame())
     keyword = st.session_state.get("last_keyword", "")
-
     if df is None or df.empty:
         st.warning("请先到“商品搜索”页搜索竞品。")
         return
-
     summary = summarize_market_df(df, keyword=keyword)
-    product_info = st.text_area("我的商品信息，可选", height=120, placeholder="例：女童舞台装，110-170cm，套装，适合発表会・ダンスイベント，主打派手、韓国、ヒップホップ...")
-
+    product_info = st.text_area("我的商品信息，可选", height=120)
     st.subheader("程序自动提取的高频词")
-    top_keywords = summary.get("top_keywords", [])
-    st.write(" / ".join([f"{w}({c})" for w, c in top_keywords[:80]]))
-
+    st.write(" / ".join([f"{w}({c})" for w, c in summary.get("top_keywords", [])[:80]]))
     if st.button("生成爆款关键词建议", type="primary"):
         with st.spinner("AI 正在生成关键词..."):
             try:
-                messages = build_ai_keyword_prompt(summary, product_info=product_info, depth=settings["depth"])
-                result = call_deepseek(
-                    api_key=settings["deepseek_api_key"],
-                    messages=messages,
-                    depth=settings["depth"],
-                    model_override=settings["selected_model"],
-                )
+                result = call_deepseek(settings["deepseek_api_key"], build_ai_keyword_prompt(summary, product_info), settings["depth"], settings["selected_model"])
                 st.session_state["ai_keyword_result"] = result
             except Exception as e:
                 st.error(str(e))
-
     if st.session_state.get("ai_keyword_result"):
         st.subheader("AI 关键词结果")
         st.markdown(st.session_state["ai_keyword_result"])
 
 
-# -----------------------------
-# 页面 7：楽天实时联想词搜索
-# -----------------------------
 def page_suggest() -> None:
     st.title("🔎 楽天实时联想词搜索")
     st.caption("先提供稳定的手动采集入口。后面如果你确定一个可用的サジェスト接口，可以再接入 Worker 自动请求。")
-
     base_keyword = st.text_input("输入主词", value="キッズ ダンス衣装")
-
-    st.subheader("手动采集入口")
     if base_keyword.strip():
         rakuten_search_url = f"https://search.rakuten.co.jp/search/mall/{requests.utils.quote(base_keyword.strip())}/"
         st.link_button("打开楽天搜索页，查看搜索框联想词", rakuten_search_url)
-
     raw_suggest = st.text_area("把你在楽天搜索框看到的联想词粘贴到这里，一行一个", height=180)
-
     if raw_suggest.strip():
         suggestions = [x.strip() for x in raw_suggest.splitlines() if x.strip()]
-        st.write(f"共 {len(suggestions)} 个联想词")
         df_suggest = pd.DataFrame({"联想词": suggestions})
         st.dataframe(df_suggest, use_container_width=True, hide_index=True)
-
-        st.subheader("联想词拆分")
         counter = Counter()
         for s in suggestions:
             counter.update(text_to_words(s, min_len=1))
         st.write(" / ".join([f"{w}({c})" for w, c in counter.most_common(80)]))
-
-        st.download_button(
-            "下载联想词 CSV",
-            data=df_suggest.to_csv(index=False).encode("utf-8-sig"),
-            file_name=f"rakuten_suggest_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-            mime="text/csv",
-        )
-
-    with st.expander("后续自动接入说明"):
-        st.write(
-            "如果后面你抓到稳定的楽天サジェスト请求地址，可以把它加到 Cloudflare Worker 里，"
-            "再在本地程序里用 POST 请求代理。这样能避免浏览器跨域和来源限制。"
-        )
+        st.download_button("下载联想词 CSV", data=df_suggest.to_csv(index=False).encode("utf-8-sig"), file_name=f"rakuten_suggest_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv", mime="text/csv")
 
 
-# -----------------------------
-# 页面 8：趋势追踪
-# -----------------------------
 def page_trends() -> None:
     st.title("📈 趋势追踪")
-    st.caption("每次商品搜索都会保存快照。多跑几天后，可以观察レビュー增长、价格变化、排名变化。")
-
     history_df = load_search_history()
     snapshots_df = load_snapshots()
-
     if history_df.empty or snapshots_df.empty:
         st.info("还没有趋势数据。请先在商品搜索页搜索几次。")
         return
-
     st.subheader("搜索历史")
     st.dataframe(history_df.head(100), use_container_width=True, hide_index=True)
-
     keywords = sorted(snapshots_df["keyword"].dropna().unique().tolist())
     selected_keyword = st.selectbox("选择关键词", ["全部"] + keywords)
     trend_df = snapshots_df if selected_keyword == "全部" else snapshots_df[snapshots_df["keyword"] == selected_keyword]
-
     st.subheader("快照数据")
     st.dataframe(trend_df.head(300), use_container_width=True, hide_index=True)
-
-    if trend_df.empty:
-        return
-
-    st.subheader("趋势指标")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("快照记录数", len(trend_df))
     c2.metric("覆盖商品数", trend_df["item_code"].nunique())
     c3.metric("平均价格", f"{trend_df['price'].mean():.0f} 円")
     c4.metric("平均レビュー", f"{trend_df['review_count'].mean():.0f}")
 
-    # 计算同 item_code 的最早/最新变化
     trend_clean = trend_df.dropna(subset=["item_code"]).copy()
     trend_clean = trend_clean[trend_clean["item_code"] != ""]
-
     if not trend_clean.empty:
         changes = []
         for item_code, g in trend_clean.groupby("item_code"):
@@ -1743,65 +1333,22 @@ def page_trends() -> None:
                 "商品URL": last.get("item_url", ""),
             })
         changes_df = pd.DataFrame(changes)
-
         if not changes_df.empty:
             st.subheader("レビュー增长榜")
-            st.dataframe(
-                changes_df.sort_values("レビュー增长", ascending=False).head(50),
-                use_container_width=True,
-                hide_index=True,
-            )
-
+            st.dataframe(changes_df.sort_values("レビュー增长", ascending=False).head(50), use_container_width=True, hide_index=True)
             st.subheader("排名上升榜")
-            st.caption("排名变化为正数表示排名上升，例如从第20名到第5名，变化为 +15。")
-            st.dataframe(
-                changes_df.sort_values("排名变化", ascending=False).head(50),
-                use_container_width=True,
-                hide_index=True,
-            )
+            st.dataframe(changes_df.sort_values("排名变化", ascending=False).head(50), use_container_width=True, hide_index=True)
         else:
             st.info("目前每个商品只有一次快照。多跑几天后会出现增长榜。")
-
-    st.subheader("每日搜索均值")
-    daily = trend_df.groupby("snapshot_date").agg(
-        平均价格=("price", "mean"),
-        平均レビュー=("review_count", "mean"),
-        平均评分=("review_average", "mean"),
-        记录数=("id", "count"),
-    ).reset_index()
+    daily = trend_df.groupby("snapshot_date").agg(平均价格=("price", "mean"), 平均レビュー=("review_count", "mean"), 平均评分=("review_average", "mean"), 记录数=("id", "count")).reset_index()
     st.line_chart(daily.set_index("snapshot_date")[["平均价格", "平均レビュー", "平均评分"]])
-
-    st.download_button(
-        "下载趋势快照 CSV",
-        data=trend_df.to_csv(index=False).encode("utf-8-sig"),
-        file_name=f"rakuten_trends_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-        mime="text/csv",
-    )
+    st.download_button("下载趋势快照 CSV", data=trend_df.to_csv(index=False).encode("utf-8-sig"), file_name=f"rakuten_trends_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv", mime="text/csv")
 
 
-# -----------------------------
-# 主程序
-# -----------------------------
 def main() -> None:
     init_db()
-
-    st.sidebar.title("🛒 Rakuten Selector V2 云部署版")
-    page = st.sidebar.radio(
-        "功能菜单",
-        [
-            "商品搜索",
-            "收藏商品",
-            "自有商品",
-            "对比分析",
-            "AI选品分析",
-            "AI爆款关键词",
-            "楽天联想词",
-            "趋势追踪",
-        ],
-    )
-
     settings = sidebar_settings()
-
+    page = settings["page"]
     if page == "商品搜索":
         page_search(settings)
     elif page == "收藏商品":
