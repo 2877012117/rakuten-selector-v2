@@ -782,6 +782,20 @@ def rakuten_item_to_own_product(item: Dict[str, Any]) -> Dict[str, Any]:
     keyword_source = " ".join([item_name, catchcopy])
     words = [w for w, _ in Counter(text_to_words(keyword_source)).most_common(30)]
 
+    note_text = (
+        f"楽天から导入：{now_str()}
+"
+        f"shopCode: {item.get('shopCode', '')}
+"
+        f"itemCode: {item.get('itemCode', '')}
+"
+        f"レビュー: {item.get('reviewCount', 0)} / {item.get('reviewAverage', 0)}
+
+"
+        f"商品説明摘录：
+{caption[:800]}"
+    )
+
     return {
         "product_name": item_name,
         "selling_price": safe_int(item.get("itemPrice", 0)),
@@ -793,13 +807,7 @@ def rakuten_item_to_own_product(item: Dict[str, Any]) -> Dict[str, Any]:
         "keywords": " ".join(words),
         "image_url": image_url,
         "product_url": item.get("itemUrl", ""),
-        "note": f"楽天から导入：{now_str()}
-shopCode: {item.get('shopCode', '')}
-itemCode: {item.get('itemCode', '')}
-レビュー: {item.get('reviewCount', 0)} / {item.get('reviewAverage', 0)}
-
-商品説明摘录：
-{caption[:800]}",
+        "note": note_text,
     }
 
 
