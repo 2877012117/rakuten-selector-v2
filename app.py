@@ -759,8 +759,7 @@ def call_proxy_item_lookup(proxy_url: str, proxy_token: str, item_code: str) -> 
 
     response = requests.post(proxy_url, json=params, headers=headers, timeout=40)
     if response.status_code != 200:
-        raise Exception(f"代理/API错误：{response.status_code}
-{response.text}")
+        raise Exception(f"代理/API错误：{response.status_code}\n{response.text}")
 
     data = response.json()
     if data.get("ok") is False:
