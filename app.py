@@ -312,6 +312,50 @@ def init_db() -> None:
         )
         """
     )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ranking_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            snapshot_date TEXT,
+            snapshot_time TEXT,
+            period TEXT,
+            genre_id TEXT,
+            age TEXT,
+            sex TEXT,
+            item_code TEXT,
+            item_name TEXT,
+            rank_position INTEGER,
+            price INTEGER,
+            review_count INTEGER,
+            review_average REAL,
+            score REAL,
+            shop_name TEXT,
+            shop_code TEXT,
+            item_url TEXT,
+            image_url TEXT,
+            catchcopy TEXT,
+            created_at TEXT
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ranking_fetch_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            snapshot_date TEXT,
+            snapshot_time TEXT,
+            period TEXT,
+            genre_id TEXT,
+            age TEXT,
+            sex TEXT,
+            result_count INTEGER,
+            max_rank INTEGER,
+            avg_price REAL,
+            avg_review_count REAL,
+            created_at TEXT
+        )
+        """
+    )
     conn.commit()
     conn.close()
 
@@ -536,6 +580,156 @@ def load_snapshots(keyword: Optional[str] = None) -> pd.DataFrame:
     return df
 
 
+def derive_ranking_proxy_url(proxy_url: str) -> str:
+    proxy_url = (proxy_url or "").strip()
+    if proxy_url.endswith("/ichiba/search"):
+        return proxy_url[:-len("/ichiba/search")] + "/ichiba/ranking"
+    if proxy_url.endswith("/ichiba/ranking"):
+        return proxy_url
+    return proxy_url.rstrip("/") + "/ichiba/ranking"
+
+
+def normalize_ranking_items(data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """兼容 Ranking API 的 items/Items/Item 包裹格式。"""
+    items = data.get("items") or data.get("Items") or []
+    normalized: List[Dict[str, Any]] = []
+    for x in items:
+        if isinstance(x, dict) and "Item" in x and isinstance(x["Item"], dict):
+            normalized.append(x["Item"])
+        elif isinstance(x, dict):
+            normalized.append(x)
+    return normalized
+
+
+def convert_ranking_items_to_df(items: List[Dict[str, Any]], period: str, genre_id: str = "") -> pd.DataFrame:
+    rows: List[Dict[str, Any]] = []
+    for index, item in enumerate(items, start=1):
+        if not isinstance(item, dict):
+            continue
+        rank = safe_int(item.get("rank", index), index)
+        row = {
+            "排名": rank,
+            "期间": "リアルタイム" if period == "realtime" else "デイリー",
+            "genreId": item.get("genreId", genre_id),
+            "商品名": clean_text(item.get("itemName", "")),
+            "キャッチコピー": clean_text(item.get("catchcopy", "")),
+            "价格": safe_int(item.get("itemPrice", 0)),
+            "レビュー数": safe_int(item.get("reviewCount", 0)),
+            "レビュー评分": to_number(item.get("reviewAverage", 0)),
+            "送料無料": "是" if safe_int(item.get("postageFlag", 1)) == 0 else "否",
+            "库存状态": "有库存" if safe_int(item.get("availability", 0)) == 1 else "无库存",
+            "ポイント倍率": to_number(item.get("pointRate", 1)),
+            "店铺名": clean_text(item.get("shopName", "")),
+            "shopCode": item.get("shopCode", ""),
+            "itemCode": item.get("itemCode", ""),
+            "商品URL": item.get("itemUrl", ""),
+            "affiliateUrl": item.get("affiliateUrl", ""),
+            "图片": get_first_image(item),
+            "商品说明": clean_text(item.get("itemCaption", "")),
+            "抓取时间": now_str(),
+        }
+        row["选品分"] = calc_score({
+            "レビュー数": row["レビュー数"],
+            "レビュー评分": row["レビュー评分"],
+            "价格": row["价格"],
+            "送料無料": row["送料無料"],
+            "库存状态": row["库存状态"],
+            "图片": row["图片"],
+            "ポイント倍率": row["ポイント倍率"],
+        })
+        rows.append(row)
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df = df.sort_values("排名", ascending=True).reset_index(drop=True)
+    return df
+
+
+def save_ranking_snapshots(df: pd.DataFrame, period: str, genre_id: str, age: str = "", sex: str = "", max_rank: int = 1000) -> None:
+    if df is None or df.empty:
+        return
+    conn = get_conn()
+    cur = conn.cursor()
+    snapshot_date = today_str()
+    snapshot_time = now_str()
+    for row in df_to_records(df):
+        cur.execute(
+            """
+            INSERT INTO ranking_snapshots (
+                snapshot_date, snapshot_time, period, genre_id, age, sex,
+                item_code, item_name, rank_position, price, review_count,
+                review_average, score, shop_name, shop_code, item_url,
+                image_url, catchcopy, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                snapshot_date,
+                snapshot_time,
+                period or "daily",
+                genre_id or "0",
+                str(age or ""),
+                str(sex or ""),
+                row.get("itemCode", ""),
+                row.get("商品名", ""),
+                safe_int(row.get("排名", 0)),
+                safe_int(row.get("价格", 0)),
+                safe_int(row.get("レビュー数", 0)),
+                to_number(row.get("レビュー评分", 0)),
+                to_number(row.get("选品分", 0)),
+                row.get("店铺名", ""),
+                row.get("shopCode", ""),
+                row.get("商品URL", ""),
+                row.get("图片", ""),
+                row.get("キャッチコピー", ""),
+                now_str(),
+            ),
+        )
+
+    cur.execute(
+        """
+        INSERT INTO ranking_fetch_history (
+            snapshot_date, snapshot_time, period, genre_id, age, sex,
+            result_count, max_rank, avg_price, avg_review_count, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            snapshot_date,
+            snapshot_time,
+            period or "daily",
+            genre_id or "0",
+            str(age or ""),
+            str(sex or ""),
+            len(df),
+            max_rank,
+            float(df["价格"].mean()) if "价格" in df.columns else 0,
+            float(df["レビュー数"].mean()) if "レビュー数" in df.columns else 0,
+            now_str(),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def load_ranking_snapshots(period: Optional[str] = None) -> pd.DataFrame:
+    conn = get_conn()
+    if period and period != "全部":
+        df = pd.read_sql_query(
+            "SELECT * FROM ranking_snapshots WHERE period=? ORDER BY snapshot_time DESC, rank_position ASC",
+            conn,
+            params=(period,),
+        )
+    else:
+        df = pd.read_sql_query("SELECT * FROM ranking_snapshots ORDER BY snapshot_time DESC, rank_position ASC", conn)
+    conn.close()
+    return df
+
+
+def load_ranking_fetch_history() -> pd.DataFrame:
+    conn = get_conn()
+    df = pd.read_sql_query("SELECT * FROM ranking_fetch_history ORDER BY snapshot_time DESC", conn)
+    conn.close()
+    return df
+
+
 # -----------------------------
 # Rakuten Proxy
 # -----------------------------
@@ -603,6 +797,98 @@ def call_proxy_search(
     if "errors" in data:
         raise Exception(str(data["errors"]))
     return data
+
+
+def call_proxy_ranking(
+    proxy_url: str,
+    proxy_token: str,
+    period: str = "realtime",
+    genre_id: str = "0",
+    page: int = 1,
+    age: str = "",
+    sex: str = "",
+) -> Dict[str, Any]:
+    ranking_url = derive_ranking_proxy_url(proxy_url)
+    if not ranking_url:
+        raise Exception("请填写代理地址")
+
+    params: Dict[str, Any] = {
+        "format": "json",
+        "formatVersion": 2,
+        "page": int(page),
+        "carrier": 0,
+        "elements": ",".join([
+            "rank", "itemName", "catchcopy", "itemCode", "itemPrice", "itemUrl", "affiliateUrl",
+            "mediumImageUrls", "smallImageUrls", "availability", "postageFlag", "reviewCount",
+            "reviewAverage", "pointRate", "shopName", "shopCode", "genreId", "itemCaption",
+        ]),
+    }
+    if period == "realtime":
+        params["period"] = "realtime"
+    # genreId 不能和 age/sex 同时用；総合为 0 或空。
+    if genre_id and str(genre_id).strip() not in {"0", "総合"}:
+        params["genreId"] = str(genre_id).strip()
+    else:
+        if age:
+            params["age"] = str(age)
+        if sex != "":
+            params["sex"] = str(sex)
+
+    headers = {"Content-Type": "application/json"}
+    if proxy_token.strip():
+        headers["X-Proxy-Token"] = proxy_token.strip()
+
+    response = requests.post(ranking_url, json=params, headers=headers, timeout=40)
+    if response.status_code != 200:
+        raise Exception(f"ランキング代理/API错误：{response.status_code}\n{response.text}")
+    try:
+        data = response.json()
+    except Exception:
+        raise Exception(f"ランキング返回内容不是 JSON：\n{response.text[:1200]}")
+    if data.get("ok") is False:
+        raise Exception(data.get("error", "ランキング代理返回错误"))
+    if "error" in data:
+        raise Exception(f"{data.get('error')}: {data.get('error_description')}")
+    if "errors" in data:
+        raise Exception(str(data["errors"]))
+    return data
+
+
+def fetch_ranking_top(
+    proxy_url: str,
+    proxy_token: str,
+    period: str,
+    genre_id: str,
+    max_rank: int = 1000,
+    age: str = "",
+    sex: str = "",
+    progress=None,
+) -> pd.DataFrame:
+    max_rank = max(1, min(int(max_rank), 1000))
+    max_page = min(34, (max_rank + 29) // 30)
+    all_items: List[Dict[str, Any]] = []
+
+    for page_no in range(1, max_page + 1):
+        if progress:
+            progress.progress(page_no / max_page, text=f"正在抓取ランキング第 {page_no}/{max_page} 页...")
+        data = call_proxy_ranking(
+            proxy_url=proxy_url,
+            proxy_token=proxy_token,
+            period=period,
+            genre_id=genre_id,
+            page=page_no,
+            age=age,
+            sex=sex,
+        )
+        items = normalize_ranking_items(data)
+        if not items:
+            break
+        all_items.extend(items)
+        if len(all_items) >= max_rank:
+            break
+
+    df = convert_ranking_items_to_df(all_items[:max_rank], period=period, genre_id=genre_id)
+    return df
 
 
 def extract_item_code_from_rakuten_url(value: str) -> str:
@@ -904,7 +1190,7 @@ def sidebar_settings() -> Dict[str, Any]:
         st.title("🛒 Rakuten Selector V2 云部署版")
         page = st.radio(
             "功能菜单",
-            ["商品搜索", "收藏商品", "自有商品", "对比分析", "AI选品分析", "AI爆款关键词", "楽天联想词", "趋势追踪"],
+            ["商品搜索", "総合ランキング", "收藏商品", "自有商品", "对比分析", "AI选品分析", "AI爆款关键词", "楽天联想词", "趋势追踪"],
         )
 
         st.divider()
@@ -1323,6 +1609,169 @@ def page_suggest() -> None:
         st.download_button("下载联想词 CSV", data=df_suggest.to_csv(index=False).encode("utf-8-sig"), file_name=f"rakuten_suggest_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv", mime="text/csv")
 
 
+def page_ranking(settings: Dict[str, Any]) -> None:
+    st.title("🏆 楽天総合ランキング抓取")
+    st.caption("自动抓取楽天市場ランキング前1000商品。支持リアルタイム榜和デイリー榜，并保存快照用于趋势追踪。")
+
+    with st.container(border=True):
+        c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
+        with c1:
+            period_label = st.selectbox("ランキング类型", ["リアルタイム", "デイリー"], index=0)
+            period = "realtime" if period_label == "リアルタイム" else "daily"
+        with c2:
+            genre_id = st.text_input("genreId，総合填 0", value="0")
+        with c3:
+            max_rank = st.selectbox("抓取数量", [80, 160, 240, 300, 600, 1000], index=5)
+        with c4:
+            filter_mode = st.selectbox("人群过滤，仅総合有效", ["全部", "男性", "女性", "10代", "20代", "30代", "40代", "50代以上"], index=0)
+
+        sex = ""
+        age = ""
+        if filter_mode == "男性":
+            sex = "0"
+        elif filter_mode == "女性":
+            sex = "1"
+        elif filter_mode == "10代":
+            age = "10"
+        elif filter_mode == "20代":
+            age = "20"
+        elif filter_mode == "30代":
+            age = "30"
+        elif filter_mode == "40代":
+            age = "40"
+        elif filter_mode == "50代以上":
+            age = "50"
+
+        st.info("注意：genreId 与性别/年龄不能同时指定。genreId 不为 0 时，程序会自动忽略人群过滤。")
+        col_fetch1, col_fetch2 = st.columns([1, 1])
+        with col_fetch1:
+            fetch_btn = st.button("抓取当前设置ランキング", type="primary")
+        with col_fetch2:
+            fetch_both_btn = st.button("一键抓取リアルタイム + デイリー 前1000")
+
+    if fetch_btn:
+        progress = st.progress(0, text="准备抓取ランキング...")
+        try:
+            df = fetch_ranking_top(
+                proxy_url=settings["proxy_url"],
+                proxy_token=settings["proxy_token"],
+                period=period,
+                genre_id=genre_id,
+                max_rank=max_rank,
+                age=age,
+                sex=sex,
+                progress=progress,
+            )
+            progress.empty()
+            if df.empty:
+                st.warning("没有抓到ランキング商品。请确认 Worker 已更新支持 /ichiba/ranking。")
+            else:
+                st.session_state["ranking_df"] = df
+                st.session_state["ranking_period"] = period
+                st.session_state["ranking_genre_id"] = genre_id
+                save_ranking_snapshots(df, period=period, genre_id=genre_id, age=age, sex=sex, max_rank=max_rank)
+                st.success(f"已抓取 {len(df)} 件ランキング商品，并保存快照。")
+        except Exception as e:
+            progress.empty()
+            st.error(str(e))
+
+    if fetch_both_btn:
+        combined = []
+        try:
+            for p in ["realtime", "daily"]:
+                progress = st.progress(0, text=f"准备抓取 {p} ランキング...")
+                df_part = fetch_ranking_top(
+                    proxy_url=settings["proxy_url"],
+                    proxy_token=settings["proxy_token"],
+                    period=p,
+                    genre_id="0",
+                    max_rank=1000,
+                    age="",
+                    sex="",
+                    progress=progress,
+                )
+                progress.empty()
+                if not df_part.empty:
+                    save_ranking_snapshots(df_part, period=p, genre_id="0", age="", sex="", max_rank=1000)
+                    combined.append(df_part)
+            if combined:
+                df = pd.concat(combined, ignore_index=True)
+                st.session_state["ranking_df"] = df
+                st.session_state["ranking_period"] = "both"
+                st.session_state["ranking_genre_id"] = "0"
+                st.success(f"已抓取并保存リアルタイム+デイリー，共 {len(df)} 条记录。")
+            else:
+                st.warning("没有抓到数据。")
+        except Exception as e:
+            st.error(str(e))
+
+    df = st.session_state.get("ranking_df", pd.DataFrame())
+    if df is not None and not df.empty:
+        st.subheader("本次抓取结果")
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("商品数", len(df))
+        c2.metric("平均价格", f"{df['价格'].mean():.0f} 円")
+        c3.metric("平均レビュー", f"{df['レビュー数'].mean():.0f}")
+        c4.metric("平均评分", f"{df['レビュー评分'].mean():.2f}")
+        c5.metric("最高选品分", f"{df['选品分'].max():.1f}")
+
+        show_cols = ["期间", "排名", "选品分", "商品名", "价格", "レビュー数", "レビュー评分", "送料無料", "店铺名", "genreId", "itemCode", "商品URL"]
+        st.dataframe(df[show_cols], use_container_width=True, hide_index=True)
+
+        col_dl1, col_dl2 = st.columns([1, 1])
+        with col_dl1:
+            st.download_button(
+                "下载ランキング Excel",
+                data=make_excel_download(df),
+                file_name=f"rakuten_ranking_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        with col_dl2:
+            st.download_button(
+                "下载ランキング CSV",
+                data=df.to_csv(index=False).encode("utf-8-sig"),
+                file_name=f"rakuten_ranking_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv",
+            )
+
+        st.subheader("Top 商品预览与收藏")
+        for idx, row in df.head(20).iterrows():
+            with st.container(border=True):
+                col_img, col_info, col_action = st.columns([1, 4, 1])
+                with col_img:
+                    if row.get("图片", ""):
+                        st.image(row.get("图片"), width=120)
+                with col_info:
+                    st.markdown(f"### {safe_int(row.get('排名', 0))}位：{row.get('商品名', '')}")
+                    st.write(f"{row.get('价格')}円 ｜ レビュー：{row.get('レビュー数')} / {row.get('レビュー评分')} ｜ 选品分：{row.get('选品分')}")
+                    st.write(f"店铺：{row.get('店铺名')} ｜ genreId：{row.get('genreId')}")
+                    if row.get("商品URL"):
+                        st.link_button("打开商品页面", row.get("商品URL"))
+                with col_action:
+                    note = st.text_input("收藏备注", key=f"rank_fav_note_{idx}")
+                    if st.button("收藏", key=f"rank_fav_btn_{idx}"):
+                        fav_row = row.to_dict()
+                        fav_row["排名位置"] = fav_row.get("排名", 0)
+                        fav_row["来源关键词"] = f"ranking_{fav_row.get('期间', '')}"
+                        save_favorite(fav_row, note=note)
+                        st.success("已收藏")
+
+    st.subheader("历史ランキング快照")
+    hist = load_ranking_fetch_history()
+    if not hist.empty:
+        st.dataframe(hist.head(100), use_container_width=True, hide_index=True)
+    snaps = load_ranking_snapshots()
+    if not snaps.empty:
+        with st.expander("查看最近ランキング快照明细"):
+            st.dataframe(snaps.head(300), use_container_width=True, hide_index=True)
+            st.download_button(
+                "下载全部ランキング快照 CSV",
+                data=snaps.to_csv(index=False).encode("utf-8-sig"),
+                file_name=f"rakuten_ranking_snapshots_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv",
+            )
+
+
 def page_trends() -> None:
     st.title("📈 趋势追踪")
     history_df = load_search_history()
@@ -1386,6 +1835,8 @@ def main() -> None:
     page = settings["page"]
     if page == "商品搜索":
         page_search(settings)
+    elif page == "総合ランキング":
+        page_ranking(settings)
     elif page == "收藏商品":
         page_favorites()
     elif page == "自有商品":
